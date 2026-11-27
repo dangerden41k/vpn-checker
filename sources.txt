@@ -1,5 +1,5 @@
-# Список источников подписок — по одному URL в строке.
-# Строки, начинающиеся с # — комментарии.
+# Список источников подписок - по одному URL в строке.
+# Строки, начинающиеся с # - комментарии.
 # Добавляй свои списки сюда, они подхватятся при следующем запуске.
 
 https://gist.githubusercontent.com/w80861248-byte/cc569bda41570037493a84c7426cd4d0/raw/NokiaVPN
@@ -10,3 +10,6 @@ https://hub.mos.ru/akelladejavu/bunker/-/raw/main/BEST_LIST.txt
 https://github.com/theakres/VPN/raw/main/all
 https://raw.githubusercontent.com/luxxuria/harvester/refs/heads/main/non_ru.txt
 https://raw.githubusercontent.com/PizdukMod/PizdukVPN/refs/heads/main/wl
+# Зеркало источника hub.mos.ru BEST_LIST (сайт режет запросы с раннеров GitHub
+# Actions) — копия файла лежит в этой же ветке data-cache.
+https://raw.githubusercontent.com/dangerden41k/vpn-checker/data-cache/mirror_bestlist.txt
