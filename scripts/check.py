@@ -1215,6 +1215,7 @@ def main():
         with open(os.path.join(args.out_dir, name + "_base64.txt"), "w",
                   encoding="utf-8") as f:
             f.write(base64.b64encode(plain.encode()).decode("ascii"))
+        return uris
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -1231,23 +1232,32 @@ def main():
         relabel(s, "black", i, geo)
     # общий sub: сначала весь «Белый», за ним «ЧС» — обе группы уже отсортированы
     alive[:] = white + black
-    write_subs("sub", alive)
-    write_subs("white", white)
-    write_subs("black", black)
+    sub_uris = write_subs("sub", alive)
+    white_uris = write_subs("white", white)
+    black_uris = write_subs("black", black)
 
-    # главный файл подписки — Happ-формат: plain-ссылки + заголовки профиля.
+    # Happ-файлы подписок: plain-ссылки + заголовки профиля — у каждой
+    # подписки своё имя карточки и автообновление каждые 3 часа.
     # Без псевдо-сервера-заголовка: его заменяют поля #profile-*
-    announce = "♻️ DangerVPN · Автообновление каждые 3 часа"
-    sub_lines = [
-        "#profile-title: DangerVPN 🚀",
-        "#announce: base64:" + b64e(announce),
-        "#profile-update-interval: 3",
-    ] + [s["uri"] for s in alive]
-    with open(os.path.join(args.out_dir, "sub"), "w", encoding="utf-8") as f:
-        f.write("\n".join(sub_lines) + "\n")
+    # (в plain/base64 версиях псевдо-сервер остаётся).
+    for fname, uris, title, ann in (
+            ("sub",   sub_uris,   "DangerVPN 🚀",
+             "♻️ DangerVPN · Автообновление каждые 3 часа"),
+            ("white", white_uris, "DangerVPN БС 🤍",
+             "♻️ DangerVPN БС · Автообновление каждые 3 часа"),
+            ("black", black_uris, "DangerVPN ЧС 🖤",
+             "♻️ DangerVPN ЧС · Автообновление каждые 3 часа")):
+        lines = [
+            "#profile-title: " + title,
+            "#announce: base64:" + b64e(ann),
+            "#profile-update-interval: 3",
+        ] + uris[1:]
+        with open(os.path.join(args.out_dir, fname), "w",
+                  encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
 
-    log(f"[i] Записано: sub (Happ), sub_plain.txt, sub_base64.txt, "
-        f"white_*.txt, black_*.txt, README.md")
+    log(f"[i] Записано: sub/white/black (Happ), *_plain.txt, "
+        f"*_base64.txt, README.md")
 
     # --- динамика: кто умер и кто появился с прошлого прогона ---
     # state.json хранит хосты живого набора с прошлого раза; разница

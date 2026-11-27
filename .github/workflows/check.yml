@@ -57,7 +57,7 @@ jobs:
         run: |
           git config user.name "dangervpn-bot"
           git config user.email "dangervpn-bot@users.noreply.github.com"
-          git add sub sub_plain.txt sub_base64.txt white_plain.txt white_base64.txt black_plain.txt black_base64.txt README.md ip_cache.json state.json
+          git add sub white black sub_plain.txt sub_base64.txt white_plain.txt white_base64.txt black_plain.txt black_base64.txt README.md ip_cache.json state.json
           git diff --cached --quiet || git commit -m "check: $(date -u '+%Y-%m-%d %H:%M UTC')"
           git pull --rebase origin main || true
           git push
