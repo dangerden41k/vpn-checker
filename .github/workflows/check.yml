@@ -1,0 +1,63 @@
+name: VPN check
+
+on:
+  schedule:
+    - cron: "23 */3 * * *"   # каждые 3 часа (на 23-й минуте — ровные часы GitHub режет)
+  workflow_dispatch: {}      # ручной запуск: вкладка Actions -> VPN check -> Run workflow
+  push:
+    branches: [ main ]      # пуш запускает проверку автоматически
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vpn-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Случайная задержка (обновление не бьёт в одну и ту же минуту)
+        run: |
+          D=$((RANDOM % 600))
+          echo "[i] пауза ${D}с"
+          sleep "$D"
+
+      - name: Источники (секрет SOURCES_LIST или служебная ветка data-cache)
+        env:
+          SOURCES_LIST: ${{ secrets.SOURCES_LIST }}
+        run: |
+          if [ -n "$SOURCES_LIST" ]; then
+            printf '%s\n' "$SOURCES_LIST" > sources.txt
+            echo "[i] источники: из секрета"
+          elif git fetch -q origin data-cache && git show FETCH_HEAD:sources.txt > sources.txt 2>/dev/null; then
+            echo "[i] источники: из служебной ветки data-cache"
+          else
+            echo "::error::Нет ни секрета SOURCES_LIST, ни ветки data-cache с файлом sources.txt"
+            exit 1
+          fi
+
+      - name: Установка движков проверки (Xray-core + sing-box)
+        run: bash scripts/get_bins.sh
+
+      - name: Проверка серверов
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python scripts/check.py --deep
+
+      - name: Коммит результатов
+        run: |
+          git config user.name "dangervpn-bot"
+          git config user.email "dangervpn-bot@users.noreply.github.com"
+          git add sub sub_plain.txt sub_base64.txt white_plain.txt white_base64.txt black_plain.txt black_base64.txt README.md ip_cache.json state.json
+          git diff --cached --quiet || git commit -m "check: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git pull --rebase origin main || true
+          git push
