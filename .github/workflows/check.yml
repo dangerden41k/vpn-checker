@@ -90,5 +90,20 @@ jobs:
           git config user.email "dangervpn-bot@users.noreply.github.com"
           git add sub white black sub_plain.txt sub_base64.txt white_plain.txt white_base64.txt black_plain.txt black_base64.txt README.md ip_cache.json state.json
           git diff --cached --quiet || git commit -m "check: $(date -u '+%Y-%m-%d %H:%M UTC')"
-          git pull --rebase origin main || true
-          git push || (sleep 20 && git pull --rebase origin main && git push)
+          # гонка прогонов: если origin ушёл вперёд, значит более свежая проверка
+          # уже в репе — свой коммит пропускаем. Пуш ретраим трижды.
+          for i in 1 2 3; do
+            git fetch origin main || true
+            BEHIND=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+            if [ "$BEHIND" -gt 0 ]; then
+              echo "::warning::origin/main ушёл вперёд (${BEHIND} комм.) — свежая проверка уже опубликована другим прогоном, свой коммит пропускаю"
+              exit 0
+            fi
+            if git push; then
+              exit 0
+            fi
+            echo "[i] push не прошёл — повтор ${i}/3 через 15с"
+            sleep 15
+          done
+          echo "::warning::не удалось запушить результаты за 3 попытки — они остались в логе прогона"
+          exit 0
