@@ -17,8 +17,10 @@ VPN Checker (DangerVPN) — проверялка серверов из публ�
       заблокирован, а разрешены только отдельные адреса);
       «ЧС» (чёрный список) — обычные TCP-серверы на «серых» IP без домена:
       работают, когда интернет не заблокирован (обычные Wi-Fi/LTE).
- 7. Определяет страну и город каждого живого сервера через ipwho.is (API
-    сервиса ipwhois.io, без ключа, с кешем на 14 дней в ip_cache.json).
+ 7. Определяет страну и город по ВЫХОДНОМУ IP туннеля: во время реального
+    теста спрашиваем ipwho.is через сам туннель — у цепочек «вход РФ →
+    выход PL» имя честно показывает страну выхода, а не рельсы (API без
+    ключа, кеш на 7 дней в ip_cache.json).
  8. Пишет подписки с простыми именами «🇬🇧 Британия — Лондон» (флаг +
     страна — город; протокол, бренд и счёт не пишем — клиент показывает
     протокол сам), первой строкой — псевдо-сервер с пометкой об
@@ -134,12 +136,12 @@ def classify(srv):
 # ---------------------------------------------------------------------------
 # Геолокация IP (ipwho.is — открытый API сервиса ipwhois.io, без ключа).
 # Результаты кешируются в ip_cache.json: у API лимит ~10k запросов/мес,
-# а проверка ходит каждые 3 часа. Свежими считаем записи младше 14 дней.
+# а проверка ходит каждые 3 часа. Свежими считаем записи младше 7 дней.
 # ---------------------------------------------------------------------------
 
 GEO_API = "https://ipwho.is/{ip}"
 GEO_CACHE = "ip_cache.json"
-GEO_MAX_AGE_DAYS = 14
+GEO_MAX_AGE_DAYS = 7
 
 # Русские названия стран по ISO-коду (что не найдём — оставим английское из API)
 COUNTRY_RU = {
@@ -370,7 +372,7 @@ def relabel(srv, cat, idx, geo):
     оно зашито внутри base64-полезной нагрузки (поле ps / remarks), поэтому
     для них пересобираем payload с новым именем.
     """
-    g = geo.get(srv["host"]) or {}
+    g = geo.get(srv.get("geo_key") or srv["host"]) or {}
     place = g.get("c", "")
     if g.get("ct"):
         place += " — " + g["ct"]
@@ -883,11 +885,17 @@ def socks5_connect(proxy_port, dst_host, dst_port, timeout):
 
 
 def http_via_socks(local_port, deadline):
-    """Качает тестовую страницу через локальный SOCKS. True = туннель жив."""
+    """Качает тестовую страницу через локальный SOCKS.
+
+    Возвращает (ok, exit_ip): ok = туннель жив; exit_ip = адрес, с которого
+    туннель выходит в интернет (у цепочек отличается от адреса входа).
+    exit_ip узнаём у ipwho.is через этот же туннель; не вышло — None.
+    """
+    exit_ip = None
     for host, port, path in TEST_URLS:
         remaining = deadline - time.time()
         if remaining <= 1.5:
-            return False
+            return False, exit_ip
         tmo = min(10.0, remaining)
         s = None
         try:
@@ -899,7 +907,36 @@ def http_via_socks(local_port, deadline):
             data = s.recv(2048)
             line = data.split(b"\r\n", 1)[0].decode("latin1", "replace")
             if re.match(r"^HTTP/\S+\s+\d{3}\b", line):
-                return True  # любой валидный HTTP-ответ = туннель работает
+                # туннель жив: спрашиваем у ipwho.is, с какого адреса выходим
+                e = None
+                try:
+                    rem = deadline - time.time()
+                    if rem > 2.0:
+                        etmo = min(6.0, rem)
+                        e = socks5_connect(local_port, "ipwho.is", 80,
+                                           timeout=etmo)
+                        e.sendall(b"GET / HTTP/1.1\r\nHost: ipwho.is\r\n"
+                                  b"User-Agent: " + UA.encode() +
+                                  b"\r\nConnection: close\r\n\r\n")
+                        e.settimeout(etmo)
+                        buf = b""
+                        while len(buf) < 65536:
+                            chunk = e.recv(4096)
+                            if not chunk:
+                                break
+                            buf += chunk
+                        m = re.search(rb'"ip"\s*:\s*"([^"]+)"', buf)
+                        if m:
+                            exit_ip = m.group(1).decode("latin1")
+                except Exception:
+                    pass
+                finally:
+                    if e:
+                        try:
+                            e.close()
+                        except Exception:
+                            pass
+                return True, exit_ip
         except Exception:
             continue
         finally:
@@ -908,7 +945,7 @@ def http_via_socks(local_port, deadline):
                     s.close()
                 except Exception:
                     pass
-    return False
+    return False, exit_ip
 
 
 # ----------------------------------------------------------------------------- этап 2: реальный тест
@@ -977,7 +1014,9 @@ def deep_test(srv, binary, engine, pool, budget, debug, dbg_counter):
             except OSError:
                 time.sleep(0.25)
         if ready:
-            ok = http_via_socks(local_port, deadline)
+            ok, exit_ip = http_via_socks(local_port, deadline)
+            if ok and exit_ip:
+                srv["exit_ip"] = exit_ip
     except Exception:
         ok = False
     finally:
@@ -1200,7 +1239,12 @@ def main():
     black = [s for s in alive if s["cat"] == "black"]
     log(f"[i] Категории: «Белый» {len(white)}, «ЧС» {len(black)}")
 
-    geo = geo_lookup(sorted({s["host"] for s in alive}),
+    # гео по ВЫХОДНОМУ адресу туннеля: у цепочек «вход РФ → выход PL» имя
+    # должно показывать реальную страну выхода, а не адрес рельсы. Нет данных
+    # о выходе (сервер прошёл только по порту) — гео по адресу входа.
+    for s in alive:
+        s["geo_key"] = s.get("exit_ip") or s["host"]
+    geo = geo_lookup(sorted({s["geo_key"] for s in alive}),
                      os.path.join(args.out_dir, GEO_CACHE))
 
     # сервер-заголовок в начале подписки: виден в клиенте как первая строка
@@ -1235,7 +1279,7 @@ def main():
 
     # сортировка: страны по алфавиту (по русскому названию), внутри — по городу
     def sort_key(s):
-        g = geo.get(s["host"]) or {}
+        g = geo.get(s["geo_key"]) or {}
         return (g.get("c") or "яя", g.get("ct") or "", s["host"], s["port"])
 
     white.sort(key=sort_key)
