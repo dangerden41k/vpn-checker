@@ -1,0 +1,12 @@
+# Список источников подписок — по одному URL в строке.
+# Строки, начинающиеся с # — комментарии.
+# Добавляй свои списки сюда, они подхватятся при следующем запуске.
+
+https://gist.githubusercontent.com/w80861248-byte/cc569bda41570037493a84c7426cd4d0/raw/NokiaVPN
+https://raw.githubusercontent.com/s0ulcoil/HavenVPN/refs/heads/main/Haven
+https://raw.githubusercontent.com/Maskkost93/kizyak-vpn-4.0/refs/heads/main/kizyakbeta6BL.txt
+https://github.com/PizdukMod/PizdukVPN/raw/refs/heads/main/Mixer
+https://hub.mos.ru/akelladejavu/bunker/-/raw/main/BEST_LIST.txt
+https://github.com/theakres/VPN/raw/main/all
+https://raw.githubusercontent.com/luxxuria/harvester/refs/heads/main/non_ru.txt
+https://raw.githubusercontent.com/PizdukMod/PizdukVPN/refs/heads/main/wl
