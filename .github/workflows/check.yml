@@ -2,10 +2,13 @@ name: VPN check
 
 on:
   schedule:
-    - cron: "23 */3 * * *"   # каждые 3 часа (на 23-й минуте — ровные часы GitHub режет)
+    # каждый час вместо каждых 3: GitHub пропускает слоты по расписанию
+    # (особенно у молодых репозиториев) — часовые слоты дают запас,
+    # а троттлинг ниже всё равно держит интервал 3 часа
+    - cron: "23 * * * *"
   workflow_dispatch: {}      # ручной запуск: вкладка Actions -> VPN check -> Run workflow
   push:
-    branches: [ main ]      # пуш запускает проверку автоматически
+    branches: [ main ]       # пуш запускает проверку автоматически
 
 permissions:
   contents: write
@@ -21,17 +24,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Троттлинг: запуски по расписанию выходят, только если последняя
+      # проверка была >= 3 часов назад. Ручные запуски и пуш-запуски
+      # троттлинг не уважают — проверяются сразу.
+      - name: Троттлинг 3 часа (только для schedule)
+        id: fresh
+        run: |
+          LAST=$(python3 -c "import json;print(json.load(open('state.json'))['t'])" 2>/dev/null || echo "1970-01-01 00:00:00")
+          AGE=$(( $(date -u +%s) - $(date -u -d "$LAST UTC" +%s) ))
+          echo "[i] последняя проверка: $LAST (возраст ${AGE}s)"
+          if [ "$AGE" -lt 10800 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Случайная задержка (обновление не бьёт в одну и ту же минуту)
+        if: github.event_name != 'schedule' || steps.fresh.outputs.skip != 'true'
         run: |
           D=$((RANDOM % 600))
           echo "[i] пауза ${D}с"
           sleep "$D"
 
       - name: Источники (секрет SOURCES_LIST или служебная ветка data-cache)
+        if: github.event_name != 'schedule' || steps.fresh.outputs.skip != 'true'
         env:
           SOURCES_LIST: ${{ secrets.SOURCES_LIST }}
         run: |
@@ -46,18 +66,21 @@ jobs:
           fi
 
       - name: Установка движков проверки (Xray-core + sing-box)
+        if: github.event_name != 'schedule' || steps.fresh.outputs.skip != 'true'
         run: bash scripts/get_bins.sh
 
       - name: Проверка серверов
+        if: github.event_name != 'schedule' || steps.fresh.outputs.skip != 'true'
         env:
           PYTHONUNBUFFERED: "1"
         run: python scripts/check.py --deep
 
       - name: Коммит результатов
+        if: github.event_name != 'schedule' || steps.fresh.outputs.skip != 'true'
         run: |
           git config user.name "dangervpn-bot"
           git config user.email "dangervpn-bot@users.noreply.github.com"
           git add sub white black sub_plain.txt sub_base64.txt white_plain.txt white_base64.txt black_plain.txt black_base64.txt README.md ip_cache.json state.json
           git diff --cached --quiet || git commit -m "check: $(date -u '+%Y-%m-%d %H:%M UTC')"
           git pull --rebase origin main || true
-          git push
+          git push || (sleep 20 && git pull --rebase origin main && git push)
