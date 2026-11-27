@@ -1096,7 +1096,7 @@ def main():
     log(f"[i] Всего ссылок скачано: {len(raw_links)}")
 
     # --- парсинг + дедуп ---
-    servers, seen, bad = [], set(), 0
+    servers, seen, bad, dups = [], set(), 0, 0
     for src, ln in raw_links:
         srv = parse_link(ln)
         if not srv:
@@ -1106,12 +1106,14 @@ def main():
             break
         k = srv_key(srv)
         if k in seen:
+            dups += 1
             continue
         seen.add(k)
         srv["src"] = src
         servers.append(srv)
     log(f"[i] Уникальных серверов: {len(servers)}"
-        + (f" (нераспознано: {bad})" if bad else ""))
+        + (f" (нераспознано: {bad})" if bad else "")
+        + (f" (дублей: {dups})" if dups else ""))
 
     if not servers:
         log("[!] Ни одного сервера — проверяй sources.txt")
@@ -1134,13 +1136,16 @@ def main():
                 log(f"  … {done}/{len(servers)}")
     port_alive = [s for s in servers if s.get("port_ok")]
     log(f"[Этап 1] Порт открыт: {len(port_alive)}/{len(servers)}")
+    for s in servers:
+        if not s.get("port_ok"):
+            log(f"    ✗ {s['proto']}://{s['host']}:{s['port']} — порт закрыт")
 
     # --- этап 2: реальный тест ---
     deep_list = [s for s in port_alive if s["engine"]]
     port_only = [s for s in port_alive if not s["engine"]]
     for s in port_only:
         s["alive"] = True
-    deep_ok = 0
+    deep_ok, deep_fail = 0, []
     if args.deep and deep_list:
         bins = {"xray": os.path.join(args.bin_dir, "xray"),
                 "singbox": os.path.join(args.bin_dir, "sing-box")}
@@ -1166,6 +1171,8 @@ def main():
                     if fut.result():
                         s["alive"] = True
                         deep_ok += 1
+                    else:
+                        deep_fail.append(s)
                     done += 1
                     if done % 25 == 0 or done == len(deep_list):
                         log(f"  … {done}/{len(deep_list)} (живых: {deep_ok})")
@@ -1178,6 +1185,13 @@ def main():
     alive = [s for s in servers if s["alive"]]
     log(f"[i] Итог в подписке: {len(alive)} серверов "
         f"(реальный тест: {deep_ok}, только порт: {len(port_only)})")
+    log(f"[i] Отклонено: дублей {dups}, нераспознано {bad}, "
+        f"порт закрыт {len(servers) - len(port_alive)}, "
+        f"туннель не ответил {len(deep_fail)}")
+    if deep_fail:
+        log("[i] Туннель поднялся, но трафик не прошёл:")
+        for s in deep_fail:
+            log(f"    ✗ {s['proto']}://{s['host']}:{s['port']}")
 
     # --- классификация Белый/ЧС + гео + имена DangerVPN ---
     for s in alive:
