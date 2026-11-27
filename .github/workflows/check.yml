@@ -2,56 +2,62 @@ name: VPN check
 
 on:
   schedule:
-    # каждый час вместо каждых 3: GitHub пропускает слоты по расписанию
-    # (особенно у молодых репозиториев) — часовые слоты дают запас,
-    # а троттлинг ниже всё равно держит интервал 3 часа
+    # запасной канал: планировщик GitHub на этой репе стабильно молча
+    # пропускал слоты, поэтому основная гарантия — цепочка ниже
     - cron: "23 * * * *"
-  workflow_dispatch: {}      # ручной запуск: вкладка Actions -> VPN check -> Run workflow
+  workflow_dispatch: {}      # ручной запуск И самоподдерживающаяся цепочка
   push:
-    branches: [ main ]       # пуш запускает проверку автоматически
+    branches: [ main ]
 
 permissions:
   contents: write
+  actions: write            # цепочке нужно право запускать себя (gh workflow run)
 
 concurrency:
-  group: vpn-check
+  # прогоны цепочки (workflow_dispatch) спят до срока проверки и не должны
+  # занимать общий слот vpn-check — им выдаётся личная группа на прогон
+  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}', github.run_id) || 'vpn-check' }}
   cancel-in-progress: false
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 300    # цепочка спит до ~3 часов до срока проверки
     steps:
       - uses: actions/checkout@v4
 
-      # Троттлинг: запуски по расписанию выходят, только если последняя
-      # проверка была >= 3 часов назад. Ручные запуски и пуш-запуски
-      # троттлинг не уважают — проверяются сразу.
-      - name: Троттлинг 3 часа (только для schedule)
+      - name: Троттлинг 3 часа
         id: fresh
         run: |
           LAST=$(python3 -c "import json;print(json.load(open('state.json'))['t'])" 2>/dev/null || echo "1970-01-01 00:00:00")
           AGE=$(( $(date -u +%s) - $(date -u -d "$LAST UTC" +%s) ))
-          echo "[i] последняя проверка: $LAST (возраст ${AGE}s)"
-          if [ "$AGE" -lt 10800 ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          REM=0
+          if [ "$AGE" -lt 10800 ]; then REM=$(( 10800 - AGE )); fi
+          echo "[i] последняя проверка: $LAST (возраст ${AGE}s, до срока ${REM}s)"
+          echo "remaining=$REM" >> "$GITHUB_OUTPUT"
+
+      # Цепочка вместо пропуска СПИТ до срока проверки и дальше делает
+      # полную проверку. Schedule-запуски просто пропускают (см. условия ниже),
+      # push-запуски проверяются сразу без троттлинга.
+      - name: Ожидание срока проверки (цепочка)
+        if: github.event_name == 'workflow_dispatch' && steps.fresh.outputs.remaining != '0'
+        run: |
+          REM=${{ steps.fresh.outputs.remaining }}
+          echo "[i] цепочка спит ${REM}s до срока"
+          sleep "$REM"
 
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        if: github.event_name != 'schedule' || steps.fresh.outputs.remaining == '0'
 
       - name: Случайная задержка (обновление не бьёт в одну и ту же минуту)
-        if: github.event_name != 'schedule' || steps.fresh.outputs.skip != 'true'
+        if: github.event_name != 'schedule' || steps.fresh.outputs.remaining == '0'
         run: |
           D=$((RANDOM % 600))
           echo "[i] пауза ${D}с"
           sleep "$D"
 
       - name: Источники (секрет SOURCES_LIST или служебная ветка data-cache)
-        if: github.event_name != 'schedule' || steps.fresh.outputs.skip != 'true'
+        if: github.event_name != 'schedule' || steps.fresh.outputs.remaining == '0'
         env:
           SOURCES_LIST: ${{ secrets.SOURCES_LIST }}
         run: |
@@ -66,7 +72,7 @@ jobs:
           fi
 
       - name: Установка движков проверки (Xray-core + sing-box)
-        if: github.event_name != 'schedule' || steps.fresh.outputs.skip != 'true'
+        if: github.event_name != 'schedule' || steps.fresh.outputs.remaining == '0'
         run: |
           bash scripts/get_bins.sh
           # страница релизов GitHub бывает недоступна (504) — добиваем повторами
@@ -78,13 +84,13 @@ jobs:
           done
 
       - name: Проверка серверов
-        if: github.event_name != 'schedule' || steps.fresh.outputs.skip != 'true'
+        if: github.event_name != 'schedule' || steps.fresh.outputs.remaining == '0'
         env:
           PYTHONUNBUFFERED: "1"
         run: python scripts/check.py --deep
 
       - name: Коммит результатов
-        if: github.event_name != 'schedule' || steps.fresh.outputs.skip != 'true'
+        if: github.event_name != 'schedule' || steps.fresh.outputs.remaining == '0'
         run: |
           git config user.name "dangervpn-bot"
           git config user.email "dangervpn-bot@users.noreply.github.com"
@@ -107,3 +113,15 @@ jobs:
           done
           echo "::warning::не удалось запушить результаты за 3 попытки — они остались в логе прогона"
           exit 0
+
+      # Самоподдерживающаяся цепочка: каждый цепочный прогон запускает
+      # следующий. Даже если проверка упала — цепочка продолжается, следующий
+      # прогон повторит попытку. Умирает только если Actions выключат целиком.
+      - name: Продолжение цепочки
+        if: always() && github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run check.yml --ref main \
+            && echo "[i] следующий прогон цепочки запущен" \
+            || echo "::warning::не удалось запустить следующий прогон цепочки — перезапусти вручную: Actions -> VPN check -> Run workflow"
