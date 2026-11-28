@@ -1075,8 +1075,13 @@ def render_stats(stats):
         for c, n in sorted(stats["countries"].items(), key=lambda x: -x[1]):
             lines.append(f"| {c} | {n} |")
         lines.append("")
-    # источники намеренно НЕ показываем: репозиторий публичный, а список
-    # источников — секрет
+    # URL источников не показываем (репозиторий публичный, список — секрет),
+    # но статус по каждому номеру — показываем: видно, кто не скачался
+    if stats.get("src_detail"):
+        parts = []
+        for num, cnt, ok in stats["src_detail"]:
+            parts.append(f"#{num} {cnt}" if ok else f"**#{num} 0 (недоступен)**")
+        lines += ["**Источники:** " + " · ".join(parts), ""]
     lines.append(STATS_END)
     return "\n".join(lines)
 
@@ -1125,10 +1130,12 @@ def main():
     log(f"[i] Источников в списке: {len(sources)}")
     raw_links = []
     src_ok = 0
+    src_detail = []  # (номер, ссылок, скачался?) — для README (без URL!)
     for i, url in enumerate(sources):
         lines = fetch_lines(url, src_no=i + 1)
         if lines:
             src_ok += 1
+        src_detail.append((i + 1, len(lines), bool(lines)))
         log(f"  [{i + 1}/{len(sources)}] источник #{i + 1} -> {len(lines)} ссылок")
         for ln in lines:
             raw_links.append((i, ln))
@@ -1353,6 +1360,7 @@ def main():
     stats = {
         "time": time.strftime("%Y-%m-%d %H:%M", time.gmtime()),
         "src_ok": src_ok, "src_total": len(sources),
+        "src_detail": src_detail,
         "links": len(raw_links), "unique": len(servers),
         "port_ok": len(port_alive), "deep_ok": deep_ok,
         "port_only_ok": len(port_only), "final": len(alive),
